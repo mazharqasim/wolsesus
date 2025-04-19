@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+import requests
+import whois
+import socket
+import subprocess
+import signal
+import sys
+from colorama import Fore, init
+from datetime import datetime
+
+# Initialize colorama
+init(autoreset=True)
+
+html_report = ""
+
+def add_to_html(title, content, color="black"):
+    global html_report
+    html_report += f"<h2 style='color:{color}'>{title}</h2><pre>{content}</pre><hr>"
+
+# ASCII Banner
+def print_banner():
+    banner = f"""
+{Fore.RED}██     ██  ██████  ██      ███████ ███████ ██    ██ ███████
+{Fore.RED}██     ██ ██    ██ ██      ██      ██      ██    ██ ██
+{Fore.RED}██  █  ██ ██    ██ ██      █████   ███████ ██    ██ ███████
+{Fore.RED}██ ███ ██ ██    ██ ██      ██           ██ ██    ██      ██
+{Fore.RED} ███ ███   ██████  ███████ ███████ ███████  ██████  ███████
+{Fore.YELLOW}                  OSINT Recon Tool - WOLF EYE
+    """
+    print(banner)
+
+# WHOIS Lookup
+def whois_lookup(domain):
+    try:
+        w = whois.whois(domain)
+        result = str(w)
+        print(f"\n{Fore.CYAN}[+] WHOIS Information:")
+        print(result)
+        add_to_html("WHOIS Information", result)
+    except Exception as e:
+        error = f"WHOIS Lookup Failed: {e}"
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("WHOIS Information", error, "red")
+
+# DNS Lookup
+def dns_lookup(domain):
+    try:
+        ip = socket.gethostbyname(domain)
+        result = f"{domain} -> {ip}"
+        print(f"\n{Fore.CYAN}[+] DNS Lookup:")
+        print(f"{Fore.GREEN}[+] {result}")
+        add_to_html("DNS Lookup", result)
+        return ip
+    except Exception as e:
+        error = f"DNS Lookup Failed: {e}"
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("DNS Lookup", error, "red")
+        return None
+
+# Common Subdomains
+def find_subdomains(domain):
+    subdomains = ["www", "mail", "ftp", "test", "admin", "blog"]
+    found = []
+    print(f"\n{Fore.CYAN}[+] Checking Common Subdomains:")
+    for sub in subdomains:
+        subdomain = f"{sub}.{domain}"
+        try:
+            ip = socket.gethostbyname(subdomain)
+            line = f"{subdomain} -> {ip}"
+            found.append(line)
+            print(f"{Fore.GREEN}[+] {line}")
+        except:
+            print(f"{Fore.YELLOW}[-] {subdomain} not found")
+    content = "\n".join(found) if found else "No common subdomains found."
+    add_to_html("Common Subdomains", content)
+
+# crt.sh Subdomain Finder
+def assetfinder_crtsh(domain):
+    print(f"\n{Fore.CYAN}[+] Assetfinder-style Subdomains from crt.sh:")
+    try:
+        url = f"https://crt.sh/?q=%25.{domain}&output=json"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            error = "Failed to fetch crt.sh data"
+            print(f"{Fore.RED}[-] {error}")
+            add_to_html("crt.sh Subdomains", error, "red")
+            return
+        data = response.json()
+        subdomains = set()
+        for entry in data:
+            name_value = entry.get("name_value", "")
+            for sub in name_value.splitlines():
+                if sub.endswith(domain):
+                    subdomains.add(sub.strip())
+        if subdomains:
+            for sub in sorted(subdomains):
+                print(f"{Fore.GREEN}[+] {sub}")
+            add_to_html("crt.sh Subdomains", "\n".join(sorted(subdomains)))
+        else:
+            msg = "No subdomains found in crt.sh"
+            print(f"{Fore.YELLOW}[!] {msg}")
+            add_to_html("crt.sh Subdomains", msg)
+    except Exception as e:
+        error = f"crt.sh Error: {e}"
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("crt.sh Subdomains", error, "red")
+
+# Google Dorks
+def google_dorks(domain):
+    print(f"\n{Fore.CYAN}[+] Suggested Google Dorks:")
+    dorks = [
+        f'inurl:"admin" site:{domain}',
+        f'inurl:"login" site:{domain}',
+        f'inurl:"cpanel" site:{domain}',
+        f'intitle:"index of" site:{domain}',
+        f'site:{domain} ext:sql | ext:dbf | ext:mdb',
+        f'site:{domain} ext:log | ext:bkf | ext:bak | ext:old | ext:backup',
+    ]
+    dork_links = []
+    for dork in dorks:
+        link = f"https://www.google.com/search?q={requests.utils.quote(dork)}"
+        print(f"{Fore.YELLOW}- {link}")
+        dork_links.append(f"<a href='{link}' target='_blank'>{dork}</a>")
+    add_to_html("Google Dorks", "<br>".join(dork_links))
+
+# Nmap Scan with vuln script
+def nmap_scan(ip):
+    print(f"\n{Fore.CYAN}[+] Running Nmap Vulnerability Scan on {ip}")
+    try:
+        cmd = ["nmap", "-sV", "--script", "vuln", ip]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        output = result.stdout
+        if output:
+            print(f"{Fore.GREEN}{output}")
+            add_to_html(f"Nmap -sV --script vuln ({ip})", output)
+        else:
+            error = f"No output from nmap.\n{result.stderr}"
+            print(f"{Fore.RED}[-] {error}")
+            add_to_html("Nmap Scan", error, "red")
+    except FileNotFoundError:
+        error = "nmap is not installed or not found in PATH."
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("Nmap Scan", error, "red")
+    except subprocess.TimeoutExpired:
+        error = "Nmap scan timed out after 3 minutes."
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("Nmap Scan", error, "red")
+    except Exception as e:
+        error = f"Nmap Error: {e}"
+        print(f"{Fore.RED}[-] {error}")
+        add_to_html("Nmap Scan", error, "red")
+
+# Graceful Shutdown on Ctrl+C
+def signal_handler(sig, frame):
+    print(f"\n{Fore.RED}[✘] Tool interrupted, shutting down...")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+
+# Save HTML to file
+def save_html(domain):
+    filename = f"recon-{domain.replace('.', '_')}.html"
+    html_template = f"""
+    <html>
+    <head><title>WOLF EYE Recon Report for {domain}</title></head>
+    <body style='font-family: monospace; background-color: #111; color: #eee; padding: 20px;'>
+        <h1 style='color: crimson;'>WOLF EYE Report</h1>
+        <h3>Domain: {domain}</h3>
+        <h4>Scan Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</h4>
+        {html_report}
+        <hr><p style='color:gray;'>Generated by Wolf Eye</p>
+    </body>
+    </html>
+    """
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(html_template)
+    print(f"\n{Fore.GREEN}[✔] HTML report saved as: {filename}")
+
+# Main Function
+if __name__ == "__main__":
+    print_banner()
+    target_domain = input(f"{Fore.MAGENTA}Enter target domain (e.g. example.com): ").strip()
+    whois_lookup(target_domain)
+    ip_address = dns_lookup(target_domain)
+    if ip_address:
+        find_subdomains(target_domain)
+        assetfinder_crtsh(target_domain)
+        google_dorks(target_domain)
+        nmap_scan(ip_address)
+    save_html(target_domain)
